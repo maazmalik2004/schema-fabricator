@@ -1,4 +1,4 @@
-function oneMoreThanSpeed(data = schema.class.Vehicle) {
+function oneMoreThanSpeed(data) {
   return data.speed + 1;
 }
 

@@ -3,6 +3,6 @@
   "numberOfSeats": "<enum:Seats>",
   "speed": "<function:getRandomSpeed>",
   "colors": "[<enum:Color>]",
-  "oneMoreThanSpeed": "<function:oneMoreThanSpeed>",
-  "sortedColors": "<function:getSortedColors>"
+  "oneMoreThanSpeed": "<function:oneMoreThanSpeed schema.class.Vehicle>",
+  "sortedColors": "<function:getSortedColors schema.enum.Color>"
 }

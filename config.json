@@ -1,8 +1,5 @@
 {
   "root": "<class:Driver>",
-  "maxDepth": 4,
-  "maxArrayLength": 4,
-  "prunePossibility": 0.9,
-  "cleanUpStackAfterGeneration": false,
-  "resume": true
+  "maxDepth": 3,
+  "maxArrayLength": 3
 }

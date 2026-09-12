@@ -1,3 +1,3 @@
-function getSortedColors(data = schema.enum.Color) {
+function getSortedColors(data) {
   return [...data].sort();
 }
