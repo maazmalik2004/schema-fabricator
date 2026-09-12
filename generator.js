@@ -14,12 +14,16 @@ const {
 } = require("./parser");
 
 class Fabricator {
-  constructor(definitionsDirectory, { maxDepth, maxArrayLength }) {
+  constructor(definitionsDirectory, { maxDepth, maxArrayLength, minOccurances = 1, random = Math.random }) {
     if (!Number.isInteger(maxDepth) || maxDepth < 1) throw new Error("maxDepth must be a positive integer.");
     if (!Number.isInteger(maxArrayLength) || maxArrayLength < 0) throw new Error("maxArrayLength must be a non-negative integer.");
+    if (!Number.isInteger(minOccurances) || minOccurances < 1) throw new Error("minOccurances must be a positive integer.");
+    if (typeof random !== "function") throw new Error("random must be a function.");
 
     this.maxDepth = maxDepth;
     this.maxArrayLength = maxArrayLength;
+    this.minOccurances = minOccurances;
+    this.random = random;
     this.loader = new DefinitionLoader(definitionsDirectory);
     ({
       classes: this.classes,
@@ -86,52 +90,7 @@ class Fabricator {
   }
 
   *expand(value, depth, resolvingUnions = new Set()) {
-    const parsed = parseDefinition(value);
-    if (parsed.type === "literal") {
-      yield parsed.value;
-      return;
-    }
-    if (parsed.type === "array") {
-      yield* this.expandArray(parsed.item, depth, resolvingUnions);
-      return;
-    }
-    if (parsed.type === "tuple") {
-      yield* this.expandTuple(parsed.values, depth, resolvingUnions);
-      return;
-    }
-    if (parsed.type === "object") {
-      yield* this.expandObject(this.normalizeEntries(parsed.entries, "Nested object"), depth, resolvingUnions);
-      return;
-    }
-
-    const { kind, name, token } = parsed;
-    switch (kind) {
-      case "String": yield ""; return;
-      case "Number": yield 0; return;
-      case "Boolean": yield false; return;
-      case "Null": yield null; return;
-      case "function": {
-        const reference = parseFunctionReference(name, token);
-        yield deferredFunction(reference.functionName, reference.argumentPaths);
-        return;
-      }
-      case "enum": {
-        const enumName = requiredTokenName(kind, name, token);
-        const values = this.definitionValues(this.enums, "Enum", enumName);
-        yield* unique(values);
-        return;
-      }
-      case "union": {
-        const unionName = requiredTokenName(kind, name, token);
-        const members = this.definitionValues(this.unions, "Union", unionName);
-        if (resolvingUnions.has(unionName)) throw new Error(`Circular union: ${unionName}`);
-        const next = new Set(resolvingUnions).add(unionName);
-        for (const member of unique(members)) yield* this.expand(member, depth, next);
-        return;
-      }
-      case "class": yield* this.expandClass(requiredTokenName(kind, name, token), depth + 1, resolvingUnions); return;
-      default: throw new Error(`Unknown type token: ${token}`);
-    }
+    for (const candidate of this.expandCoverageCandidates(value, depth, "$", resolvingUnions)) yield candidate.value;
   }
 
   definitionValues(definitions, type, name) {
@@ -141,63 +100,233 @@ class Fabricator {
     return values;
   }
 
-  *expandArray(itemDefinition, depth, resolvingUnions) {
+  *expandCoverageCandidates(value, depth, location = "$", resolvingUnions = new Set()) {
+    const parsed = parseDefinition(value);
+    if (parsed.type === "literal") {
+      yield { value: parsed.value, selections: [] };
+      return;
+    }
+    if (parsed.type === "array") {
+      yield* this.expandCoverageArray(parsed.item, depth, location, resolvingUnions);
+      return;
+    }
+    if (parsed.type === "tuple") {
+      yield* this.expandCoverageTuple(parsed.values, depth, location, resolvingUnions);
+      return;
+    }
+    if (parsed.type === "object") {
+      yield* this.expandCoverageEntries(this.normalizeEntries(parsed.entries, "Nested object"), depth, location, resolvingUnions);
+      return;
+    }
+
+    const { kind, name, token } = parsed;
+    switch (kind) {
+      case "String": yield { value: "", selections: [] }; return;
+      case "Number": yield { value: 0, selections: [] }; return;
+      case "Boolean": yield { value: false, selections: [] }; return;
+      case "Null": yield { value: null, selections: [] }; return;
+      case "function": {
+        const reference = parseFunctionReference(name, token);
+        yield { value: deferredFunction(reference.functionName, reference.argumentPaths), selections: [] };
+        return;
+      }
+      case "enum": {
+        const enumName = requiredTokenName(kind, name, token);
+        for (const enumValue of unique(this.definitionValues(this.enums, "Enum", enumName))) {
+          yield {
+            value: enumValue,
+            selections: [{ decision: `enum:${location}:${enumName}`, value: JSON.stringify(enumValue) }],
+          };
+        }
+        return;
+      }
+      case "union": {
+        const unionName = requiredTokenName(kind, name, token);
+        if (resolvingUnions.has(unionName)) throw new Error(`Circular union: ${unionName}`);
+        const next = new Set(resolvingUnions).add(unionName);
+        for (const member of unique(this.definitionValues(this.unions, "Union", unionName))) {
+          for (const expanded of this.expandCoverageCandidates(member, depth, location, next)) {
+            yield {
+              value: expanded.value,
+              selections: [{ decision: `union:${location}:${unionName}`, value: member }, ...expanded.selections],
+            };
+          }
+        }
+        return;
+      }
+      case "class":
+        yield* this.expandCoverageClass(requiredTokenName(kind, name, token), depth + 1, location, resolvingUnions);
+        return;
+      default: throw new Error(`Unknown type token: ${token}`);
+    }
+  }
+
+  *expandCoverageArray(itemDefinition, depth, location, resolvingUnions) {
     for (let length = 0; length <= this.maxArrayLength; length += 1) {
-      yield* this.expandArrayItems(itemDefinition, length, depth, resolvingUnions);
+      for (const expanded of this.expandCoverageArrayItems(itemDefinition, length, depth, location, resolvingUnions)) {
+        yield {
+          value: expanded.value,
+          selections: [{ decision: `array:${location}`, value: String(length) }, ...expanded.selections],
+        };
+      }
     }
   }
 
-  *expandArrayItems(itemDefinition, length, depth, resolvingUnions) {
-    if (length === 0) {
-      yield [];
+  *expandCoverageArrayItems(itemDefinition, length, depth, location, resolvingUnions, index = 0) {
+    if (index === length) {
+      yield { value: [], selections: [] };
       return;
     }
-    for (const item of this.expand(itemDefinition, depth, resolvingUnions)) {
-      for (const rest of this.expandArrayItems(itemDefinition, length - 1, depth, resolvingUnions)) yield [item, ...rest];
+    for (const item of this.expandCoverageCandidates(itemDefinition, depth, `${location}[${index}]`, resolvingUnions)) {
+      for (const rest of this.expandCoverageArrayItems(itemDefinition, length, depth, location, resolvingUnions, index + 1)) {
+        yield { value: [item.value, ...rest.value], selections: [...item.selections, ...rest.selections] };
+      }
     }
   }
 
-  *expandTuple(values, depth, resolvingUnions, index = 0, result = []) {
+  *expandCoverageTuple(values, depth, location, resolvingUnions, index = 0, result = [], selections = []) {
     if (index === values.length) {
-      yield result;
+      yield { value: result, selections };
       return;
     }
-    for (const value of this.expand(values[index], depth, resolvingUnions)) {
-      yield* this.expandTuple(values, depth, resolvingUnions, index + 1, [...result, value]);
+    for (const expanded of this.expandCoverageCandidates(values[index], depth, `${location}[${index}]`, resolvingUnions)) {
+      yield* this.expandCoverageTuple(
+        values,
+        depth,
+        location,
+        resolvingUnions,
+        index + 1,
+        [...result, expanded.value],
+        [...selections, ...expanded.selections]
+      );
     }
   }
 
-  *expandObject(entries, depth, resolvingUnions, index = 0, result = {}) {
+  *expandCoverageEntries(entries, depth, location, resolvingUnions, complete = (value) => value, index = 0, result = {}, selections = []) {
     if (index === entries.length) {
-      yield result;
+      yield { value: complete(result), selections };
       return;
     }
     const { key, definition, optional } = entries[index];
-    if (optional) yield* this.expandObject(entries, depth, resolvingUnions, index + 1, result);
-    for (const value of this.expand(definition, depth, resolvingUnions)) {
-      yield* this.expandObject(entries, depth, resolvingUnions, index + 1, { ...result, [key]: value });
+    const propertyLocation = `${location}.${key}`;
+    if (optional) {
+      yield* this.expandCoverageEntries(
+        entries,
+        depth,
+        location,
+        resolvingUnions,
+        complete,
+        index + 1,
+        result,
+        [...selections, { decision: `optional:${propertyLocation}`, value: "exclude" }]
+      );
+    }
+    for (const expanded of this.expandCoverageCandidates(definition, depth, propertyLocation, resolvingUnions)) {
+      yield* this.expandCoverageEntries(
+        entries,
+        depth,
+        location,
+        resolvingUnions,
+        complete,
+        index + 1,
+        { ...result, [key]: expanded.value },
+        [...selections, ...(optional ? [{ decision: `optional:${propertyLocation}`, value: "include" }] : []), ...expanded.selections]
+      );
     }
   }
 
-  *expandClass(className, depth, resolvingUnions) {
+  *expandCoverageClass(className, depth, location, resolvingUnions) {
     if (depth > this.maxDepth) {
-      yield null;
+      yield { value: null, selections: [] };
       return;
     }
-    yield* this.expandClassEntries(className, this.classEntries(className), 0, {}, depth, resolvingUnions);
+    yield* this.expandCoverageEntries(
+      this.classEntries(className),
+      depth,
+      location,
+      resolvingUnions,
+      (object) => {
+        this.classInstanceNames.set(object, className);
+        return object;
+      }
+    );
   }
 
-  *expandClassEntries(className, entries, index, object, depth, resolvingUnions) {
-    if (index === entries.length) {
-      this.classInstanceNames.set(object, className);
-      yield object;
-      return;
+  sampleCoverageValue(value, depth, location = "$", resolvingUnions = new Set(), ancestors = []) {
+    const parsed = parseDefinition(value);
+    if (parsed.type === "literal") return parsed.value;
+    if (parsed.type === "array") return this.sampleCoverageArray(parsed.item, depth, location, resolvingUnions, ancestors);
+    if (parsed.type === "tuple") {
+      return parsed.values.map((item, index) => this.sampleCoverageValue(item, depth, `${location}[${index}]`, resolvingUnions, ancestors));
     }
-    const entry = entries[index];
-    if (entry.optional) yield* this.expandClassEntries(className, entries, index + 1, object, depth, resolvingUnions);
-    for (const value of this.expand(entry.definition, depth, resolvingUnions)) {
-      yield* this.expandClassEntries(className, entries, index + 1, { ...object, [entry.key]: value }, depth, resolvingUnions);
+    if (parsed.type === "object") {
+      return this.sampleCoverageEntries(this.normalizeEntries(parsed.entries, "Nested object"), depth, location, resolvingUnions, ancestors);
     }
+
+    const { kind, name, token } = parsed;
+    switch (kind) {
+      case "String": return "";
+      case "Number": return 0;
+      case "Boolean": return false;
+      case "Null": return null;
+      case "function": {
+        const reference = parseFunctionReference(name, token);
+        return deferredFunction(reference.functionName, reference.argumentPaths);
+      }
+      case "enum": {
+        const enumName = requiredTokenName(kind, name, token);
+        const values = unique(this.definitionValues(this.enums, "Enum", enumName));
+        return this.selectCoverageBranch(`enum:${location}:${enumName}`, values, (item) => JSON.stringify(item), ancestors).value;
+      }
+      case "union": {
+        const unionName = requiredTokenName(kind, name, token);
+        if (resolvingUnions.has(unionName)) throw new Error(`Circular union: ${unionName}`);
+        const members = unique(this.definitionValues(this.unions, "Union", unionName));
+        const branch = this.selectCoverageBranch(`union:${location}:${unionName}`, members, JSON.stringify, ancestors);
+        return this.sampleCoverageValue(branch.value, depth, location, new Set(resolvingUnions).add(unionName), [...ancestors, branch]);
+      }
+      case "class": return this.sampleCoverageClass(requiredTokenName(kind, name, token), depth + 1, location, resolvingUnions, ancestors);
+      default: throw new Error(`Unknown type token: ${token}`);
+    }
+  }
+
+  sampleCoverageArray(itemDefinition, depth, location, resolvingUnions, ancestors) {
+    const lengths = Array.from({ length: this.maxArrayLength + 1 }, (_, length) => length);
+    const branch = this.selectCoverageBranch(`array:${location}`, lengths, String, ancestors);
+    return Array.from(
+      { length: branch.value },
+      (_, index) => this.sampleCoverageValue(itemDefinition, depth, `${location}[${index}]`, resolvingUnions, [...ancestors, branch])
+    );
+  }
+
+  sampleCoverageEntries(entries, depth, location, resolvingUnions, ancestors, complete = (value) => value) {
+    const object = {};
+    for (const { key, definition, optional } of entries) {
+      const propertyLocation = `${location}.${key}`;
+      if (optional) {
+        const branch = this.selectCoverageBranch(`optional:${propertyLocation}`, ["exclude", "include"], (item) => item, ancestors);
+        if (branch.value === "exclude") continue;
+        object[key] = this.sampleCoverageValue(definition, depth, propertyLocation, resolvingUnions, [...ancestors, branch]);
+        continue;
+      }
+      object[key] = this.sampleCoverageValue(definition, depth, propertyLocation, resolvingUnions, ancestors);
+    }
+    return complete(object);
+  }
+
+  sampleCoverageClass(className, depth, location, resolvingUnions, ancestors) {
+    if (depth > this.maxDepth) return null;
+    return this.sampleCoverageEntries(
+      this.classEntries(className),
+      depth,
+      location,
+      resolvingUnions,
+      ancestors,
+      (object) => {
+        this.classInstanceNames.set(object, className);
+        return object;
+      }
+    );
   }
 
   buildPossibilityTree(value, depth = 0, resolvingUnions = new Set()) {
@@ -279,7 +408,69 @@ class Fabricator {
   }
 
   *generateTrees(root) {
-    for (const tree of this.expand(root, 0)) yield this.materialize(tree);
+    this.occurrenceTree = this.buildOccurrenceTree();
+    do {
+      const document = this.sampleCoverageValue(root, 0);
+      this.refreshOccurrenceTree();
+      yield this.materialize(document);
+    } while (!this.occurrenceTree.pruned);
+  }
+
+  buildOccurrenceTree() {
+    this.occurrenceNodes = new Map();
+    return { pruned: false, decisions: [] };
+  }
+
+  selectCoverageBranch(decision, values, keyForValue, ancestors) {
+    let node = this.occurrenceNodes.get(decision);
+    const keys = values.map((value) => keyForValue(value));
+    if (!node) {
+      node = {
+        decision,
+        branches: values.map((value, index) => ({
+          value,
+          key: keys[index],
+          occurrences: 0,
+          pruned: false,
+          descendants: [],
+        })),
+      };
+      this.occurrenceNodes.set(decision, node);
+      this.occurrenceTree.decisions.push(node);
+    } else if (node.branches.length !== values.length || node.branches.some((branch, index) => branch.key !== keys[index])) {
+      throw new Error(`Inconsistent coverage choices for decision: ${decision}`);
+    }
+
+    for (const ancestor of ancestors) {
+      if (!ancestor.descendants.includes(decision)) ancestor.descendants.push(decision);
+    }
+
+    this.refreshOccurrenceTree();
+    const eligible = node.branches.filter((branch) => !branch.pruned);
+    const branch = this.randomChoice(eligible.length ? eligible : node.branches);
+    if (eligible.length) branch.occurrences += 1;
+    return branch;
+  }
+
+  refreshOccurrenceTree() {
+    const completed = this.occurrenceTree.decisions.map((node) => this.isCoverageDecisionComplete(node));
+    this.occurrenceTree.pruned = completed.every(Boolean);
+  }
+
+  randomChoice(choices) {
+    const random = this.random();
+    if (!Number.isFinite(random) || random < 0 || random >= 1) throw new Error("random must return a number from 0 (inclusive) to 1 (exclusive).");
+    return choices[Math.floor(random * choices.length)];
+  }
+
+  isCoverageDecisionComplete(node, visiting = new Set()) {
+    if (visiting.has(node.decision)) return false;
+    const next = new Set(visiting).add(node.decision);
+    for (const branch of node.branches) {
+      branch.pruned = branch.occurrences >= this.minOccurances
+        && branch.descendants.every((decision) => this.isCoverageDecisionComplete(this.occurrenceNodes.get(decision), next));
+    }
+    return node.branches.every((branch) => branch.pruned);
   }
 
   createSchemaContext(classInstances) {
@@ -348,8 +539,8 @@ function writeDocument(document, outputDirectory, count) {
   return Buffer.byteLength(contents);
 }
 
-function writeDocuments(documents, outputDirectory = path.join(__dirname, "generated"), { onProgress } = {}) {
-  clearOutputDirectory(outputDirectory);
+function writeDocuments(documents, outputDirectory = path.join(__dirname, "generated"), { onProgress, clearOutput = true } = {}) {
+  if (clearOutput) clearOutputDirectory(outputDirectory);
 
   let count = 0;
   let bytes = 0;
@@ -362,8 +553,8 @@ function writeDocuments(documents, outputDirectory = path.join(__dirname, "gener
   return count;
 }
 
-async function writeDocumentsLive(documents, outputDirectory, { onProgress } = {}) {
-  clearOutputDirectory(outputDirectory);
+async function writeDocumentsLive(documents, outputDirectory, { onProgress, clearOutput = true } = {}) {
+  if (clearOutput) clearOutputDirectory(outputDirectory);
 
   let count = 0;
   let bytes = 0;
@@ -396,81 +587,18 @@ function formatBytes(bytes) {
   return `${value.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
 }
 
-function createSpinner(label, stream = process.stdout) {
-  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  let detail = "";
-  let frame = 0;
-  let timer;
-
-  const render = (complete) => {
-    const suffix = complete === undefined ? frames[frame++ % frames.length] : (complete ? "✓" : "✖");
-    const line = `${suffix} ${label}:${detail ? ` ${detail}` : ""}`;
-    if (stream.isTTY) stream.write(`\r\x1b[2K${line}`);
-    else stream.write(`${line}\n`);
-  };
-
-  return {
-    start() {
-      render();
-      timer = setInterval(render, stream.isTTY ? 80 : 500);
-    },
-    update(nextDetail) {
-      detail = nextDetail;
-    },
-    stop(success = true) {
-      if (timer) clearInterval(timer);
-      render(success);
-    },
-  };
-}
-
-async function runCli() {
-  const config = readJson(path.join(__dirname, "config.json"));
-  const definitionsDirectory = path.join(__dirname, "definitions");
-  const outputDirectory = path.join(__dirname, "generated");
-
-  const loading = createSpinner("Loading definitions");
-  loading.start();
-  let fabricator;
-  try {
-    fabricator = new Fabricator(definitionsDirectory, config);
-    loading.stop();
-  } catch (error) {
-    loading.stop(false);
-    throw error;
-  }
-
-  const planning = createSpinner("Planning possibilities");
-  planning.start();
-  let tree;
-  try {
-    tree = fabricator.buildPossibilityTree(config.root);
-    planning.stop();
-  } catch (error) {
-    planning.stop(false);
-    throw error;
-  }
-  console.log(`Total possible documents: ${tree.possibilities}`);
-
-  const generating = createSpinner("Generating documents");
-  generating.start();
-  try {
-    const count = await writeDocumentsLive(fabricator.generateTrees(config.root), outputDirectory, {
-      onProgress: ({ count: completed, bytes }) => generating.update(`${completed}  ${formatBytes(bytes)}`),
-    });
-    generating.stop();
-    console.log(`Generated ${count} document(s) in ${outputDirectory}.`);
-  } catch (error) {
-    generating.stop(false);
-    throw error;
-  }
-}
+module.exports = {
+  Fabricator,
+  formatBytes,
+  generate,
+  generateToDirectory,
+  writeDocuments,
+  writeDocumentsLive,
+};
 
 if (require.main === module) {
-  runCli().catch((error) => {
+  require("./cli").runCli().catch((error) => {
     console.error(error);
     process.exitCode = 1;
   });
 }
-
-module.exports = { Fabricator, createSpinner, formatBytes, generate, generateToDirectory, writeDocuments, writeDocumentsLive };

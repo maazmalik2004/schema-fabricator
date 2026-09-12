@@ -1,5 +1,6 @@
 {
   "root": "<class:Driver>",
-  "maxDepth": 3,
-  "maxArrayLength": 3
+  "maxDepth": 4,
+  "maxArrayLength": 10,
+  "minOccurances": 3
 }
