@@ -34,10 +34,16 @@ function isAffirmative(answer) {
   return ["y", "yes"].includes(answer.trim().toLowerCase());
 }
 
+function formatConfirmationPrompt(output = process.stdout) {
+  const choices = "[y/n/yes/no]";
+  const highlightedChoices = output.isTTY ? `\x1b[31m${choices}\x1b[0m` : choices;
+  return `Proceed with generation ${highlightedChoices}: `;
+}
+
 function confirmGeneration(input = process.stdin, output = process.stdout) {
   const prompt = readline.createInterface({ input, output });
   return new Promise((resolve) => {
-    prompt.question("Proceed with generation [y/n/yes/no]: ", (answer) => {
+    prompt.question(formatConfirmationPrompt(output), (answer) => {
       prompt.close();
       resolve(isAffirmative(answer));
     });
@@ -80,6 +86,11 @@ function createSpinner(label, stream = process.stdout) {
   };
 }
 
+function formatGenerationProgress({ count, bytes, coverage }) {
+  const coverageDetail = `coverage-${coverage.percentage}% (${coverage.fulfilled}/${coverage.total} decision branches)`;
+  return `${count}  ${formatBytes(bytes)}  ${coverageDetail}`;
+}
+
 async function runCliStage(label, output, work) {
   const spinner = createSpinner(label, output);
   spinner.start();
@@ -116,6 +127,9 @@ async function runCli({
 
   output.write(`Estimated number of possible documents: ${possibilities}\n`);
   output.write(`Configuration:\n${formatConfiguration(config)}\n`);
+  output.write(
+    `Coverage-based pruning is enabled: each decision branch targets ${fabricator.minOccurances} occurrence(s).\n`,
+  );
   if (!(await confirm(input, output))) {
     output.write("Generation cancelled.\n");
     return 0;
@@ -125,7 +139,7 @@ async function runCli({
     prepareOutputDirectory(outputDirectory, output),
   );
   const count = await runCliStage(
-    "Generating documents (pruning search space)",
+    "Generating documents",
     output,
     (spinner) =>
       writeDocumentsLive(
@@ -133,7 +147,11 @@ async function runCli({
         outputDirectory,
         {
           onProgress: ({ count: completed, bytes }) =>
-            spinner.update(`${completed}  ${formatBytes(bytes)}`),
+            spinner.update(formatGenerationProgress({
+              count: completed,
+              bytes,
+              coverage: fabricator.coverageStats(),
+            })),
           clearOutput: false,
         },
       ),
@@ -145,6 +163,8 @@ async function runCli({
 module.exports = {
   confirmGeneration,
   createSpinner,
+  formatConfirmationPrompt,
+  formatGenerationProgress,
   formatConfiguration,
   isAffirmative,
   prepareOutputDirectory,

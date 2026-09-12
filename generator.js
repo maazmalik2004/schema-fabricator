@@ -89,167 +89,11 @@ class Fabricator {
     return this.normalizeEntries(Object.entries(this.classProperties(className)), `Class ${className}`);
   }
 
-  *expand(value, depth, resolvingUnions = new Set()) {
-    for (const candidate of this.expandCoverageCandidates(value, depth, "$", resolvingUnions)) yield candidate.value;
-  }
-
   definitionValues(definitions, type, name) {
     if (!definitions.has(name)) throw new Error(`Unknown ${type.toLowerCase()}: ${name}`);
     const values = definitions.get(name);
     if (!Array.isArray(values)) throw new Error(`${type} ${name} must contain a JSON array.`);
     return values;
-  }
-
-  *expandCoverageCandidates(value, depth, location = "$", resolvingUnions = new Set()) {
-    const parsed = parseDefinition(value);
-    if (parsed.type === "literal") {
-      yield { value: parsed.value, selections: [] };
-      return;
-    }
-    if (parsed.type === "array") {
-      yield* this.expandCoverageArray(parsed.item, depth, location, resolvingUnions);
-      return;
-    }
-    if (parsed.type === "tuple") {
-      yield* this.expandCoverageTuple(parsed.values, depth, location, resolvingUnions);
-      return;
-    }
-    if (parsed.type === "object") {
-      yield* this.expandCoverageEntries(this.normalizeEntries(parsed.entries, "Nested object"), depth, location, resolvingUnions);
-      return;
-    }
-
-    const { kind, name, token } = parsed;
-    switch (kind) {
-      case "String": yield { value: "", selections: [] }; return;
-      case "Number": yield { value: 0, selections: [] }; return;
-      case "Boolean": yield { value: false, selections: [] }; return;
-      case "Null": yield { value: null, selections: [] }; return;
-      case "function": {
-        const reference = parseFunctionReference(name, token);
-        yield { value: deferredFunction(reference.functionName, reference.argumentPaths), selections: [] };
-        return;
-      }
-      case "enum": {
-        const enumName = requiredTokenName(kind, name, token);
-        for (const enumValue of unique(this.definitionValues(this.enums, "Enum", enumName))) {
-          yield {
-            value: enumValue,
-            selections: [{ decision: `enum:${location}:${enumName}`, value: JSON.stringify(enumValue) }],
-          };
-        }
-        return;
-      }
-      case "union": {
-        const unionName = requiredTokenName(kind, name, token);
-        if (resolvingUnions.has(unionName)) throw new Error(`Circular union: ${unionName}`);
-        const next = new Set(resolvingUnions).add(unionName);
-        for (const member of unique(this.definitionValues(this.unions, "Union", unionName))) {
-          for (const expanded of this.expandCoverageCandidates(member, depth, location, next)) {
-            yield {
-              value: expanded.value,
-              selections: [{ decision: `union:${location}:${unionName}`, value: member }, ...expanded.selections],
-            };
-          }
-        }
-        return;
-      }
-      case "class":
-        yield* this.expandCoverageClass(requiredTokenName(kind, name, token), depth + 1, location, resolvingUnions);
-        return;
-      default: throw new Error(`Unknown type token: ${token}`);
-    }
-  }
-
-  *expandCoverageArray(itemDefinition, depth, location, resolvingUnions) {
-    for (let length = 0; length <= this.maxArrayLength; length += 1) {
-      for (const expanded of this.expandCoverageArrayItems(itemDefinition, length, depth, location, resolvingUnions)) {
-        yield {
-          value: expanded.value,
-          selections: [{ decision: `array:${location}`, value: String(length) }, ...expanded.selections],
-        };
-      }
-    }
-  }
-
-  *expandCoverageArrayItems(itemDefinition, length, depth, location, resolvingUnions, index = 0) {
-    if (index === length) {
-      yield { value: [], selections: [] };
-      return;
-    }
-    for (const item of this.expandCoverageCandidates(itemDefinition, depth, `${location}[${index}]`, resolvingUnions)) {
-      for (const rest of this.expandCoverageArrayItems(itemDefinition, length, depth, location, resolvingUnions, index + 1)) {
-        yield { value: [item.value, ...rest.value], selections: [...item.selections, ...rest.selections] };
-      }
-    }
-  }
-
-  *expandCoverageTuple(values, depth, location, resolvingUnions, index = 0, result = [], selections = []) {
-    if (index === values.length) {
-      yield { value: result, selections };
-      return;
-    }
-    for (const expanded of this.expandCoverageCandidates(values[index], depth, `${location}[${index}]`, resolvingUnions)) {
-      yield* this.expandCoverageTuple(
-        values,
-        depth,
-        location,
-        resolvingUnions,
-        index + 1,
-        [...result, expanded.value],
-        [...selections, ...expanded.selections]
-      );
-    }
-  }
-
-  *expandCoverageEntries(entries, depth, location, resolvingUnions, complete = (value) => value, index = 0, result = {}, selections = []) {
-    if (index === entries.length) {
-      yield { value: complete(result), selections };
-      return;
-    }
-    const { key, definition, optional } = entries[index];
-    const propertyLocation = `${location}.${key}`;
-    if (optional) {
-      yield* this.expandCoverageEntries(
-        entries,
-        depth,
-        location,
-        resolvingUnions,
-        complete,
-        index + 1,
-        result,
-        [...selections, { decision: `optional:${propertyLocation}`, value: "exclude" }]
-      );
-    }
-    for (const expanded of this.expandCoverageCandidates(definition, depth, propertyLocation, resolvingUnions)) {
-      yield* this.expandCoverageEntries(
-        entries,
-        depth,
-        location,
-        resolvingUnions,
-        complete,
-        index + 1,
-        { ...result, [key]: expanded.value },
-        [...selections, ...(optional ? [{ decision: `optional:${propertyLocation}`, value: "include" }] : []), ...expanded.selections]
-      );
-    }
-  }
-
-  *expandCoverageClass(className, depth, location, resolvingUnions) {
-    if (depth > this.maxDepth) {
-      yield { value: null, selections: [] };
-      return;
-    }
-    yield* this.expandCoverageEntries(
-      this.classEntries(className),
-      depth,
-      location,
-      resolvingUnions,
-      (object) => {
-        this.classInstanceNames.set(object, className);
-        return object;
-      }
-    );
   }
 
   sampleCoverageValue(value, depth, location = "$", resolvingUnions = new Set(), ancestors = []) {
@@ -419,6 +263,21 @@ class Fabricator {
   buildOccurrenceTree() {
     this.occurrenceNodes = new Map();
     return { pruned: false, decisions: [] };
+  }
+
+  coverageStats() {
+    if (!this.occurrenceTree) {
+      return { fulfilled: 0, total: 0, percentage: 0 };
+    }
+
+    const branches = this.occurrenceTree.decisions.flatMap(({ branches }) => branches);
+    const fulfilled = branches.filter(({ pruned }) => pruned).length;
+    const total = branches.length;
+    return {
+      fulfilled,
+      total,
+      percentage: total ? Math.floor((fulfilled / total) * 100) : 0,
+    };
   }
 
   selectCoverageBranch(decision, values, keyForValue, ancestors) {

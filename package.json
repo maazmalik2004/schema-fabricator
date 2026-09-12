@@ -2,7 +2,7 @@
   "name": "schema-fabricator",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "generator.js",
   "scripts": {
     "test": "node --test test/generator.test.js"
   },
