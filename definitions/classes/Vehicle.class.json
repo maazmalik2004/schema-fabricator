@@ -1,0 +1,8 @@
+{
+  "id": "<function:getId>",
+  "numberOfSeats": "<enum:Seats>",
+  "speed": "<function:getRandomSpeed>",
+  "colors": "[<enum:Color>]",
+  "oneMoreThanSpeed": "<function:oneMoreThanSpeed>",
+  "sortedColors": "<function:getSortedColors>"
+}
