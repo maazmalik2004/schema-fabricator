@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Schema Fabricator · Designer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="mark">◇</span><span>Schema Fabricator</span><small>Designer</small></div>
+      <div class="toolbar">
+        <button id="newDefinition" class="primary">New definition</button>
+        <button id="format">Format JSON</button>
+        <button id="validate">Validate</button>
+        <button id="save" class="primary">Save</button>
+      </div>
+    </header>
+    <main>
+      <aside class="sidebar">
+        <div class="panel-title"><span>Project files</span><button id="refresh" title="Refresh">↻</button></div>
+        <nav id="fileTree" aria-label="Schema files"></nav>
+      </aside>
+      <section class="workspace">
+        <div class="editor-bar">
+          <span id="fileName">Select a file</span>
+          <div class="editor-actions">
+            <div id="editorModes" class="editor-modes" aria-label="Editor mode">
+              <button type="button" data-mode="json" class="active">JSON</button>
+              <button type="button" data-mode="gui">GUI</button>
+            </div>
+            <span id="dirty"></span>
+          </div>
+        </div>
+        <div id="editor" aria-label="Schema editor"></div>
+        <div id="formEditor" class="form-editor" hidden></div>
+        <div class="status" id="status">Ready</div>
+      </section>
+      <aside class="inspector">
+        <section>
+          <h2>Insert a token</h2>
+          <p>Place the cursor in the editor, then choose a suggestion.</p>
+          <div id="suggestions" class="suggestions"></div>
+        </section>
+        <section>
+          <h2>Definition guide</h2>
+          <dl>
+            <dt>Class</dt><dd>JSON object; use folders to inherit.</dd>
+            <dt>Enum</dt><dd>JSON array of values.</dd>
+            <dt>Union</dt><dd>JSON array of alternative definitions.</dd>
+            <dt>Function</dt><dd>JavaScript function evaluated at materialization.</dd>
+            <dt>State</dt><dd>Mutable JSON shared by functions during a run.</dd>
+          </dl>
+        </section>
+        <section>
+          <h2>Quick examples</h2>
+          <pre>{
+  "name": "&lt;String&gt;",
+  "items?": "[&lt;class:Item&gt;]"
+}</pre>
+        </section>
+      </aside>
+    </main>
+    <dialog id="createDialog">
+      <form method="dialog" id="createForm">
+        <h2>New definition</h2>
+        <label>Kind<select id="definitionType"><option value="class">Class</option><option value="enum">Enum</option><option value="union">Union</option><option value="function">Function</option><option value="state">State</option></select></label>
+        <label>Name<input id="definitionName" required pattern="[A-Za-z][A-Za-z0-9_-]*" placeholder="Article"></label>
+        <label id="parentField">Parent class<select id="parentClass"><option value="">No parent</option></select></label>
+        <div class="dialog-actions"><button type="button" id="cancelCreate">Cancel</button><button value="default" class="primary">Create</button></div>
+      </form>
+    </dialog>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

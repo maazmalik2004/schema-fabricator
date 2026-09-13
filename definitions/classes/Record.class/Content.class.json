@@ -1,0 +1,5 @@
+{
+  "title": "<String>",
+  "visibility": "<enum:Visibility>",
+  "tags?": "[<enum:Tag>]"
+}

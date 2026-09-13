@@ -1,0 +1,15 @@
+{
+  "name": "<String>",
+  "slug": "<function:createWorkspaceSlug schema.class.Workspace>",
+  "featuredContent": "<union:Content>",
+  "comments?": "[<class:Comment>]",
+  "settings": {
+    "theme": "<enum:Theme>",
+    "locale?": "<enum:Locale>",
+    "navigation?": "[<union:NavigationItem>]",
+    "featureFlags": {
+      "commentsEnabled": "<Boolean>",
+      "maxPinnedItems": "<Number>"
+    }
+  }
+}

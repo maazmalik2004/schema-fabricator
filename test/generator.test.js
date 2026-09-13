@@ -25,15 +25,14 @@ const { deferredFunction } = require("../parser");
 const definitionsDirectory = path.join(__dirname, "..", "definitions");
 const baseConfig = { maxDepth: 1, maxArrayLength: 1 };
 
-test("covers inherited-class decisions while preserving schema-aware functions", () => {
+test("covers multilevel inherited definitions while preserving stateful functions", () => {
   const fabricator = new Fabricator(definitionsDirectory, { ...baseConfig, random: () => 0 });
-  const documents = fabricator.generate("<class:Car>");
-  assert.equal(documents.length, 5);
-  assert.ok(documents.every((document) => document.numberPlate === ""));
-  assert.ok(documents.every((document) => document.oneMoreThanSpeed === document.speed + 1));
-  assert.ok(documents.every((document) => document.sortedColors.join(",") === "blue,green,red"));
-  assert.deepEqual([...new Set(documents.map((document) => document.numberOfSeats))].sort(), [3, 4, 5, 6, 7]);
-  assert.deepEqual([...new Set(documents.flatMap((document) => document.colors))].sort(), ["blue", "green", "red"]);
+  const documents = fabricator.generate("<class:Article>");
+  assert.ok(documents.length >= 3);
+  assert.ok(documents.every((document) => document.createdAt === "2026-01-01T00:00:00.000Z"));
+  assert.ok(documents.every((document) => document.body === "" && document.rating === 0 && document.featured === false));
+  assert.ok(documents.every((document) => document.readingMinutes === 1));
+  assert.ok(documents.every((document) => document.availableTags.join(",") === "architecture,beginner,testing"));
 });
 
 test("expands tags and optional properties at every nesting level", () => {
@@ -41,7 +40,7 @@ test("expands tags and optional properties at every nesting level", () => {
   fabricator.loader.functionCache.set("constant", () => () => "computed");
   const documents = fabricator.generate({
     nested: {
-      color: "<enum:Color>",
+      theme: "<enum:Theme>",
       "label?": "<function:constant>",
       fixed: ["<Number>", "<Boolean>"],
     },
@@ -54,20 +53,20 @@ test("expands tags and optional properties at every nesting level", () => {
 
 test("covers independent decisions without generating their Cartesian product", () => {
   const fabricator = new Fabricator(definitionsDirectory, { ...baseConfig, random: () => 0 });
-  const documents = fabricator.generate({ color: "<enum:Color>", seats: "<enum:Seats>" });
+  const documents = fabricator.generate({ theme: "<enum:Theme>", tag: "<enum:Tag>" });
 
-  assert.equal(documents.length, 5);
-  assert.deepEqual([...new Set(documents.map((document) => document.color))].sort(), ["blue", "green", "red"]);
-  assert.deepEqual([...new Set(documents.map((document) => document.seats))].sort(), [3, 4, 5, 6, 7]);
-  assert.equal(documents.filter((document) => document.color === "red").length, 3);
-  const colorDecision = fabricator.occurrenceTree.decisions.find(({ decision }) => decision === "enum:$.color:Color");
-  assert.equal(colorDecision.branches.find(({ value }) => value === "red").occurrences, 1);
+  assert.equal(documents.length, 3);
+  assert.deepEqual([...new Set(documents.map((document) => document.theme))].sort(), ["dark", "light", "system"]);
+  assert.deepEqual([...new Set(documents.map((document) => document.tag))].sort(), ["architecture", "beginner", "testing"]);
+  assert.equal(documents.filter((document) => document.theme === "light").length, 1);
+  const themeDecision = fabricator.occurrenceTree.decisions.find(({ decision }) => decision === "enum:$.theme:Theme");
+  assert.equal(themeDecision.branches.find(({ value }) => value === "light").occurrences, 1);
   assert.ok(fabricator.occurrenceTree.decisions.every(({ branches }) => branches.every((branch) => branch.occurrences >= 1 && branch.pruned)));
 });
 
 test("keeps one occurrence tree for an entire generation run", () => {
   const fabricator = new Fabricator(definitionsDirectory, { ...baseConfig, random: () => 0 });
-  const documents = fabricator.generateTrees({ color: "<enum:Color>", seats: "<enum:Seats>" });
+  const documents = fabricator.generateTrees({ theme: "<enum:Theme>", tag: "<enum:Tag>" });
   documents.next();
   const occurrenceTree = fabricator.occurrenceTree;
   documents.next();
@@ -78,7 +77,7 @@ test("keeps one occurrence tree for an entire generation run", () => {
 
 test("reports fulfilled coverage branches from the shared occurrence tree", () => {
   const fabricator = new Fabricator(definitionsDirectory, { ...baseConfig, random: () => 0 });
-  const documents = fabricator.generateTrees("<enum:Color>");
+  const documents = fabricator.generateTrees("<enum:Theme>");
 
   documents.next();
   assert.deepEqual(fabricator.coverageStats(), { fulfilled: 1, total: 3, percentage: 33 });
@@ -92,16 +91,16 @@ test("randomly covers and prunes every optional include and exclude branch", () 
     minOccurances: 2,
     random: () => 0,
   });
-  const documents = fabricator.generate({ "color?": "<enum:Color>" });
+  const documents = fabricator.generate({ "theme?": "<enum:Theme>" });
 
   assert.equal(documents.length, 8);
-  assert.equal(documents.filter((document) => !Object.hasOwn(document, "color")).length, 2);
-  for (const color of ["red", "blue", "green"]) {
-    assert.equal(documents.filter((document) => document.color === color).length, 2);
+  assert.equal(documents.filter((document) => !Object.hasOwn(document, "theme")).length, 2);
+  for (const theme of ["light", "dark", "system"]) {
+    assert.equal(documents.filter((document) => document.theme === theme).length, 2);
   }
 
-  const optionalDecision = fabricator.occurrenceTree.decisions.find(({ decision }) => decision === "optional:$.color");
-  assert.equal(optionalDecision.decision, "optional:$.color");
+  const optionalDecision = fabricator.occurrenceTree.decisions.find(({ decision }) => decision === "optional:$.theme");
+  assert.equal(optionalDecision.decision, "optional:$.theme");
   assert.deepEqual(
     optionalDecision.branches.map(({ value, occurrences, pruned }) => ({ value, occurrences, pruned })),
     [
@@ -119,7 +118,7 @@ test("shares one occurrence tree across optional, array, union, and enum decisio
     minOccurances: 2,
     random: () => 0,
   });
-  const documents = fabricator.generate({ "vehicles?": "[<union:Vehicle>]" });
+  const documents = fabricator.generate({ "content?": "[<union:Content>]" });
 
   assert.ok(documents.length > 0);
   assert.ok(fabricator.occurrenceTree.decisions.some(({ decision }) => decision.startsWith("optional:")));
@@ -132,17 +131,17 @@ test("shares one occurrence tree across optional, array, union, and enum decisio
 
 test("builds an exact multiplicative possibility tree", () => {
   const fabricator = new Fabricator(definitionsDirectory, baseConfig);
-  const tree = fabricator.buildPossibilityTree("<class:Driver>");
+  const tree = fabricator.buildPossibilityTree("<class:Comment>");
   assert.equal(tree.type, "class");
-  assert.equal(tree.name, "Driver");
-  assert.equal(tree.possibilities, 15n);
+  assert.equal(tree.name, "Comment");
+  assert.equal(tree.possibilities, 6n);
 });
 
 test("passes multiple schema arguments to functions", () => {
   const fabricator = new Fabricator(definitionsDirectory, baseConfig);
-  fabricator.loader.functionCache.set("combine", () => (vehicle, colors) => `${vehicle.speed}:${colors[0]}`);
-  const value = deferredFunction("combine", ["schema.class.Vehicle", "schema.enum.Color"]);
-  assert.equal(fabricator.materializeFunction(value, new Map([["Vehicle", { speed: 12 }]])), "12:red");
+  fabricator.loader.functionCache.set("combine", () => (workspace, tags) => `${workspace.name}:${tags[0]}`);
+  const value = deferredFunction("combine", ["schema.class.Workspace", "schema.enum.Tag"]);
+  assert.equal(fabricator.materializeFunction(value, new Map([["Workspace", { name: "Docs" }]])), "Docs:beginner");
 });
 
 test("streams generated documents to the output directory", () => {
@@ -210,7 +209,7 @@ test("validates coverage configuration and random values", () => {
     /minOccurances must be a positive integer/
   );
   const fabricator = new Fabricator(definitionsDirectory, { ...baseConfig, random: () => 1 });
-  assert.throws(() => fabricator.generate("<enum:Color>"), /random must return a number/);
+  assert.throws(() => fabricator.generate("<enum:Theme>"), /random must return a number/);
 });
 
 test("prepares output directories and reports whether it creates or clears them", () => {
@@ -273,7 +272,7 @@ test("CLI reports live coverage against all discovered decision branches", async
   };
   try {
     await runCli({
-      config: { root: "<enum:Color>", ...baseConfig },
+      config: { root: "<enum:Theme>", ...baseConfig },
       definitionsDirectory,
       outputDirectory,
       output: stream,
@@ -283,6 +282,25 @@ test("CLI reports live coverage against all discovered decision branches", async
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+});
+
+test("CLI skips the document-count estimate for recursive schemas", async () => {
+  let output = "";
+  const stream = {
+    isTTY: false,
+    write: (line) => { output += line; },
+  };
+  const count = await runCli({
+    config: { root: "<class:Workspace>", ...baseConfig },
+    definitionsDirectory,
+    output: stream,
+    confirm: async () => false,
+  });
+
+  assert.equal(count, 0);
+  assert.match(output, /schema is recursive- skipping total possible documents calculation/);
+  assert.doesNotMatch(output, /Estimated number of possible documents/);
+  assert.doesNotMatch(output, /Planning possible documents/);
 });
 
 test("CLI cancellation preserves an existing output directory", async () => {
@@ -369,16 +387,47 @@ test("shares loaded state across functions", () => {
   }
 });
 
-test("validates malformed tags and circular unions", () => {
+test("uses demo state to allocate sequential record IDs", () => {
+  const fabricator = new Fabricator(definitionsDirectory, baseConfig);
+  assert.deepEqual(
+    fabricator.generate({ first: "<function:nextId>", second: "<function:nextId>" }),
+    [{ first: 1, second: 2 }]
+  );
+});
+
+test("identifies direct and mutual recursion while validating every reachable branch", () => {
+  const fabricator = new Fabricator(definitionsDirectory, baseConfig);
+  fabricator.unions.set("Tree", ["<String>", { child: "<union:Tree>" }]);
+  fabricator.classes.set("Left", {
+    filename: "<memory>/Left.class.json",
+    name: "Left",
+    properties: { right: "<class:Right>" },
+  });
+  fabricator.classes.set("Right", {
+    filename: "<memory>/Right.class.json",
+    name: "Right",
+    properties: { left: "<class:Left>" },
+  });
+  fabricator.unions.set("InvalidTree", ["<union:InvalidTree>", "<enum:Missing>"]);
+
+  assert.equal(fabricator.isRecursiveSchema("<union:Tree>"), true);
+  assert.equal(fabricator.isRecursiveSchema("<class:Left>"), true);
+  assert.throws(() => fabricator.generate("<union:InvalidTree>"), /Unknown enum: Missing/);
+});
+
+test("validates malformed tags and bounds recursive unions by maxDepth", () => {
   for (const token of ["<class>", "<union>", "<enum>", "<function>"]) {
     assert.throws(() => generate(token, { config: baseConfig }), /token must include a name/);
   }
-  const fabricator = new Fabricator(definitionsDirectory, baseConfig);
-  fabricator.classes.set("Loop", {
-    filename: "<memory>/Loop.class.json",
-    name: "Loop",
-    properties: { child: "<union:Loop>" },
-  });
-  fabricator.unions.set("Loop", ["<class:Loop>"]);
-  assert.throws(() => [...fabricator.generateTrees("<union:Loop>")], /Circular union: Loop/);
+  const fabricator = new Fabricator(definitionsDirectory, { ...baseConfig, maxDepth: 2, random: () => 0 });
+  fabricator.unions.set("Tree", ["<String>", { next: "<union:Tree>" }]);
+
+  const tree = fabricator.buildPossibilityTree("<union:Tree>");
+  assert.equal(tree.possibilities, 3n);
+  assert.deepEqual(fabricator.generate("<union:Tree>"), [
+    "",
+    { next: "" },
+    { next: { next: null } },
+  ]);
+  assert.equal(tree.children[1].properties[0].choices.children[1].properties[0].choices.truncated, true);
 });

@@ -1,0 +1,9 @@
+{
+  "body": "<String>",
+  "rating": "<Number>",
+  "featured": "<Boolean>",
+  "summary": "<Null>",
+  "related": ["<union:Content>"],
+  "readingMinutes": "<function:estimateReadingTime schema.class.Article>",
+  "availableTags": "<function:getTagCatalog schema.enum.Tag>"
+}

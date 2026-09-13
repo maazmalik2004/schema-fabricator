@@ -119,13 +119,16 @@ async function runCli({
     output,
     () => new Fabricator(definitionsDirectory, config),
   );
-  const possibilities = await runCliStage(
-    "Planning possible documents",
-    output,
-    () => fabricator.buildPossibilityTree(config.root).possibilities,
-  );
-
-  output.write(`Estimated number of possible documents: ${possibilities}\n`);
+  if (fabricator.isRecursiveSchema(config.root)) {
+    output.write("schema is recursive- skipping total possible documents calculation\n");
+  } else {
+    const possibilities = await runCliStage(
+      "Planning possible documents",
+      output,
+      () => fabricator.buildPossibilityTree(config.root).possibilities,
+    );
+    output.write(`Estimated number of possible documents: ${possibilities}\n`);
+  }
   output.write(`Configuration:\n${formatConfiguration(config)}\n`);
   output.write(
     `Coverage-based pruning is enabled: each decision branch targets ${fabricator.minOccurances} occurrence(s).\n`,

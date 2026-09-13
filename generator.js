@@ -89,6 +89,62 @@ class Fabricator {
     return this.normalizeEntries(Object.entries(this.classProperties(className)), `Class ${className}`);
   }
 
+  analyzeSchema(root) {
+    let recursive = false;
+    const validatedDefinitions = new Set();
+    const visitDefinition = (value, visiting) => {
+      const parsed = parseDefinition(value);
+      if (parsed.type === "literal") return;
+      if (parsed.type === "array") return visitDefinition(parsed.item, visiting);
+      if (parsed.type === "tuple") {
+        for (const item of parsed.values) visitDefinition(item, visiting);
+        return;
+      }
+      if (parsed.type === "object") {
+        for (const { definition } of this.normalizeEntries(parsed.entries, "Nested object")) {
+          visitDefinition(definition, visiting);
+        }
+        return;
+      }
+
+      const { kind, name, token } = parsed;
+      switch (kind) {
+        case "String": case "Number": case "Boolean": case "Null": return;
+        case "function":
+          parseFunctionReference(name, token);
+          return;
+        case "enum":
+          this.definitionValues(this.enums, "Enum", requiredTokenName(kind, name, token));
+          return;
+        case "class": case "union":
+          visitNamed(kind, requiredTokenName(kind, name, token), visiting);
+          return;
+        default: throw new Error(`Unknown type token: ${token}`);
+      }
+    };
+    const visitNamed = (kind, name, visiting) => {
+      const identifier = `${kind}:${name}`;
+      if (visiting.has(identifier)) {
+        recursive = true;
+        return;
+      }
+      if (validatedDefinitions.has(identifier)) return;
+      const next = new Set(visiting).add(identifier);
+      const definitions = kind === "class"
+        ? this.classEntries(name).map(({ definition }) => definition)
+        : this.definitionValues(this.unions, "Union", name);
+      for (const definition of definitions) visitDefinition(definition, next);
+      validatedDefinitions.add(identifier);
+    };
+
+    visitDefinition(root, new Set());
+    return { recursive };
+  }
+
+  isRecursiveSchema(root) {
+    return this.analyzeSchema(root).recursive;
+  }
+
   definitionValues(definitions, type, name) {
     if (!definitions.has(name)) throw new Error(`Unknown ${type.toLowerCase()}: ${name}`);
     const values = definitions.get(name);
@@ -96,15 +152,23 @@ class Fabricator {
     return values;
   }
 
-  sampleCoverageValue(value, depth, location = "$", resolvingUnions = new Set(), ancestors = []) {
+  sampleCoverageValue(value, depth, location = "$", resolvingUnions = new Set(), ancestors = [], recursiveDepth = 0) {
     const parsed = parseDefinition(value);
     if (parsed.type === "literal") return parsed.value;
-    if (parsed.type === "array") return this.sampleCoverageArray(parsed.item, depth, location, resolvingUnions, ancestors);
+    if (parsed.type === "array") return this.sampleCoverageArray(parsed.item, depth, location, resolvingUnions, ancestors, recursiveDepth);
     if (parsed.type === "tuple") {
-      return parsed.values.map((item, index) => this.sampleCoverageValue(item, depth, `${location}[${index}]`, resolvingUnions, ancestors));
+      return parsed.values.map((item, index) => this.sampleCoverageValue(item, depth, `${location}[${index}]`, resolvingUnions, ancestors, recursiveDepth));
     }
     if (parsed.type === "object") {
-      return this.sampleCoverageEntries(this.normalizeEntries(parsed.entries, "Nested object"), depth, location, resolvingUnions, ancestors);
+      return this.sampleCoverageEntries(
+        this.normalizeEntries(parsed.entries, "Nested object"),
+        depth,
+        location,
+        resolvingUnions,
+        ancestors,
+        (object) => object,
+        recursiveDepth
+      );
     }
 
     const { kind, name, token } = parsed;
@@ -124,41 +188,49 @@ class Fabricator {
       }
       case "union": {
         const unionName = requiredTokenName(kind, name, token);
-        if (resolvingUnions.has(unionName)) throw new Error(`Circular union: ${unionName}`);
+        const isRecursiveReference = resolvingUnions.has(unionName);
+        if (isRecursiveReference && recursiveDepth >= this.maxDepth - 1) return null;
         const members = unique(this.definitionValues(this.unions, "Union", unionName));
         const branch = this.selectCoverageBranch(`union:${location}:${unionName}`, members, JSON.stringify, ancestors);
-        return this.sampleCoverageValue(branch.value, depth, location, new Set(resolvingUnions).add(unionName), [...ancestors, branch]);
+        return this.sampleCoverageValue(
+          branch.value,
+          depth,
+          location,
+          new Set(resolvingUnions).add(unionName),
+          [...ancestors, branch],
+          recursiveDepth + (isRecursiveReference ? 1 : 0)
+        );
       }
-      case "class": return this.sampleCoverageClass(requiredTokenName(kind, name, token), depth + 1, location, resolvingUnions, ancestors);
+      case "class": return this.sampleCoverageClass(requiredTokenName(kind, name, token), depth + 1, location, resolvingUnions, ancestors, recursiveDepth);
       default: throw new Error(`Unknown type token: ${token}`);
     }
   }
 
-  sampleCoverageArray(itemDefinition, depth, location, resolvingUnions, ancestors) {
+  sampleCoverageArray(itemDefinition, depth, location, resolvingUnions, ancestors, recursiveDepth = 0) {
     const lengths = Array.from({ length: this.maxArrayLength + 1 }, (_, length) => length);
     const branch = this.selectCoverageBranch(`array:${location}`, lengths, String, ancestors);
     return Array.from(
       { length: branch.value },
-      (_, index) => this.sampleCoverageValue(itemDefinition, depth, `${location}[${index}]`, resolvingUnions, [...ancestors, branch])
+      (_, index) => this.sampleCoverageValue(itemDefinition, depth, `${location}[${index}]`, resolvingUnions, [...ancestors, branch], recursiveDepth)
     );
   }
 
-  sampleCoverageEntries(entries, depth, location, resolvingUnions, ancestors, complete = (value) => value) {
+  sampleCoverageEntries(entries, depth, location, resolvingUnions, ancestors, complete = (value) => value, recursiveDepth = 0) {
     const object = {};
     for (const { key, definition, optional } of entries) {
       const propertyLocation = `${location}.${key}`;
       if (optional) {
         const branch = this.selectCoverageBranch(`optional:${propertyLocation}`, ["exclude", "include"], (item) => item, ancestors);
         if (branch.value === "exclude") continue;
-        object[key] = this.sampleCoverageValue(definition, depth, propertyLocation, resolvingUnions, [...ancestors, branch]);
+        object[key] = this.sampleCoverageValue(definition, depth, propertyLocation, resolvingUnions, [...ancestors, branch], recursiveDepth);
         continue;
       }
-      object[key] = this.sampleCoverageValue(definition, depth, propertyLocation, resolvingUnions, ancestors);
+      object[key] = this.sampleCoverageValue(definition, depth, propertyLocation, resolvingUnions, ancestors, recursiveDepth);
     }
     return complete(object);
   }
 
-  sampleCoverageClass(className, depth, location, resolvingUnions, ancestors) {
+  sampleCoverageClass(className, depth, location, resolvingUnions, ancestors, recursiveDepth = 0) {
     if (depth > this.maxDepth) return null;
     return this.sampleCoverageEntries(
       this.classEntries(className),
@@ -169,17 +241,18 @@ class Fabricator {
       (object) => {
         this.classInstanceNames.set(object, className);
         return object;
-      }
+      },
+      recursiveDepth
     );
   }
 
-  buildPossibilityTree(value, depth = 0, resolvingUnions = new Set()) {
+  buildPossibilityTree(value, depth = 0, resolvingUnions = new Set(), recursiveDepth = 0) {
     const leaf = (type, details = {}) => ({ type, possibilities: 1n, ...details });
     const parsed = parseDefinition(value);
     if (parsed.type === "literal") return leaf("literal", { value: parsed.value });
-    if (parsed.type === "array") return this.buildArrayPossibilityTree(parsed.item, depth, resolvingUnions);
-    if (parsed.type === "tuple") return this.buildTuplePossibilityTree(parsed.values, depth, resolvingUnions);
-    if (parsed.type === "object") return this.buildObjectPossibilityTree(this.normalizeEntries(parsed.entries, "Nested object"), depth, resolvingUnions);
+    if (parsed.type === "array") return this.buildArrayPossibilityTree(parsed.item, depth, resolvingUnions, recursiveDepth);
+    if (parsed.type === "tuple") return this.buildTuplePossibilityTree(parsed.values, depth, resolvingUnions, recursiveDepth);
+    if (parsed.type === "object") return this.buildObjectPossibilityTree(this.normalizeEntries(parsed.entries, "Nested object"), depth, resolvingUnions, recursiveDepth);
 
     const { kind, name, token } = parsed;
     switch (kind) {
@@ -194,19 +267,22 @@ class Fabricator {
       }
       case "union": {
         const unionName = requiredTokenName(kind, name, token);
-        if (resolvingUnions.has(unionName)) throw new Error(`Circular union: ${unionName}`);
+        const isRecursiveReference = resolvingUnions.has(unionName);
+        if (isRecursiveReference && recursiveDepth >= this.maxDepth - 1) {
+          return { type: "union", name: unionName, recursive: true, truncated: true, possibilities: 1n, children: [] };
+        }
         const next = new Set(resolvingUnions).add(unionName);
         const children = unique(this.definitionValues(this.unions, "Union", unionName))
-          .map((member) => this.buildPossibilityTree(member, depth, next));
+          .map((member) => this.buildPossibilityTree(member, depth, next, recursiveDepth + (isRecursiveReference ? 1 : 0)));
         return { type: "union", name: unionName, possibilities: children.reduce((total, child) => total + child.possibilities, 0n), children };
       }
-      case "class": return this.buildClassPossibilityTree(requiredTokenName(kind, name, token), depth + 1, resolvingUnions);
+      case "class": return this.buildClassPossibilityTree(requiredTokenName(kind, name, token), depth + 1, resolvingUnions, recursiveDepth);
       default: throw new Error(`Unknown type token: ${token}`);
     }
   }
 
-  buildArrayPossibilityTree(itemDefinition, depth, resolvingUnions) {
-    const item = this.buildPossibilityTree(itemDefinition, depth, resolvingUnions);
+  buildArrayPossibilityTree(itemDefinition, depth, resolvingUnions, recursiveDepth = 0) {
+    const item = this.buildPossibilityTree(itemDefinition, depth, resolvingUnions, recursiveDepth);
     const lengths = [];
     let possibilities = 0n;
     for (let length = 0; length <= this.maxArrayLength; length += 1) {
@@ -217,8 +293,8 @@ class Fabricator {
     return { type: "array", possibilities, item, lengths };
   }
 
-  buildTuplePossibilityTree(values, depth, resolvingUnions) {
-    const children = values.map((value) => this.buildPossibilityTree(value, depth, resolvingUnions));
+  buildTuplePossibilityTree(values, depth, resolvingUnions, recursiveDepth = 0) {
+    const children = values.map((value) => this.buildPossibilityTree(value, depth, resolvingUnions, recursiveDepth));
     return {
       type: "tuple",
       possibilities: children.reduce((total, child) => total * child.possibilities, 1n),
@@ -226,9 +302,9 @@ class Fabricator {
     };
   }
 
-  buildObjectPossibilityTree(entries, depth, resolvingUnions) {
+  buildObjectPossibilityTree(entries, depth, resolvingUnions, recursiveDepth = 0) {
     const properties = entries.map(({ key, definition, optional }) => {
-      const choices = this.buildPossibilityTree(definition, depth, resolvingUnions);
+      const choices = this.buildPossibilityTree(definition, depth, resolvingUnions, recursiveDepth);
       return { name: key, optional, choices, possibilities: choices.possibilities + (optional ? 1n : 0n) };
     });
     return {
@@ -238,10 +314,10 @@ class Fabricator {
     };
   }
 
-  buildClassPossibilityTree(className, depth, resolvingUnions) {
+  buildClassPossibilityTree(className, depth, resolvingUnions, recursiveDepth = 0) {
     if (depth > this.maxDepth) return { type: "class", name: className, truncated: true, possibilities: 1n, properties: [] };
     const properties = this.classEntries(className).map(({ key, definition, optional }) => {
-      const choices = this.buildPossibilityTree(definition, depth, resolvingUnions);
+      const choices = this.buildPossibilityTree(definition, depth, resolvingUnions, recursiveDepth);
       return { name: key, optional, possibilities: choices.possibilities + (optional ? 1n : 0n), choices };
     });
     return { type: "class", name: className, possibilities: properties.reduce((total, property) => total * property.possibilities, 1n), properties };
@@ -252,6 +328,7 @@ class Fabricator {
   }
 
   *generateTrees(root) {
+    this.analyzeSchema(root);
     this.occurrenceTree = this.buildOccurrenceTree();
     do {
       const document = this.sampleCoverageValue(root, 0);

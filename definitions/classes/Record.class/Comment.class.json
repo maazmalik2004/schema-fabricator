@@ -1,0 +1,6 @@
+{
+  "author": "<String>",
+  "body": "<String>",
+  "reaction": ["<enum:Reaction>", "<Boolean>"],
+  "replyTo?": "<class:Comment>"
+}

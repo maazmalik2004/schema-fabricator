@@ -1,6 +1,6 @@
 {
-  "root": "<class:Driver>",
-  "maxDepth": 8,
-  "maxArrayLength": 20,
+  "root": "<class:Workspace>",
+  "maxDepth": 5,
+  "maxArrayLength": 2,
   "minOccurances": 3
 }

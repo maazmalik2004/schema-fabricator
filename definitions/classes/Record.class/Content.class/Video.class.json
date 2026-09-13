@@ -1,0 +1,8 @@
+{
+  "durationSeconds": "<Number>",
+  "captions": "<Boolean>",
+  "formats": [
+    "mp4",
+    "webm"
+  ]
+}

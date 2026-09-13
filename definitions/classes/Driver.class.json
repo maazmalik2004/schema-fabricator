@@ -1,5 +1,0 @@
-{
-  "name": "<String>",
-  "drivesVehicles": "[<union:Vehicle>]",
-  "shirtColors?": "[<enum:Color>]"
-}

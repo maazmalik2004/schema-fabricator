@@ -1,8 +1,0 @@
-{
-  "id": "<function:getId>",
-  "numberOfSeats": "<enum:Seats>",
-  "speed": "<function:getRandomSpeed>",
-  "colors": "[<enum:Color>]",
-  "oneMoreThanSpeed": "<function:oneMoreThanSpeed schema.class.Vehicle>",
-  "sortedColors": "<function:getSortedColors schema.enum.Color>"
-}
